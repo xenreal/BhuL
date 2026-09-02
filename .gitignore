@@ -1,0 +1,55 @@
+# Python Virtual Environments
+myenv/
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python Bytecode and Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# SQLite & Databases
+*.db
+*.sqlite
+*.sqlite3
+bhulekh.db
+
+# Uploaded Files & Temporary Media
+uploaded_images/
+Backend/uploaded_images/
+**/uploaded_images/*
+!**/uploaded_images/.gitkeep
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Node / Frontend (React, Vite, Next.js)
+node_modules/
+dist/
+build/
+.next/
+out/
+.parcel-cache/
+coverage/
+
+# Logs & OS / Editor artifacts
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+

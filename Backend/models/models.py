@@ -30,6 +30,8 @@ class DocumentStatusEnum(str, enum.Enum):
     processing = "processing"
     flagged = "flagged"
     verified = "verified"
+    committed = "committed"
+    failed = "failed"
 
 
 class Document(Base):

@@ -3,18 +3,23 @@ from pydantic import BaseModel, Field
 
 
 class LandownerDetails(BaseModel):
-    name: str = Field(
-        description="All co-owner names exactly as listed under 'नाम मालिक व एहवाल' / 'नाम मालिक व अहवाल', separated by commas"
+    name: Optional[str] = Field(
+        default=None,
+        description="All co-owner names exactly as listed under 'नाम मालिक व एहवाल' / 'Name of Owner', separated by commas"
     )
     address: Optional[str] = Field(
-        default="स्थानिय वासी",
+        default=None,
         description="Address or residence of the property owner (e.g. 'स्थानिय वासी')"
     )
 
 
 class PlotArea(BaseModel):
-    value: Union[float, str] = Field(description="Numeric value or formatted area string (e.g. '14-10' or '5-8, 2-10, 3-16, 2-16')")
-    unit: str = Field(description="Measurement unit (e.g. Kanal-Marla, Bigha-Biswa, Acre, Hectare). NEVER 'irrigated'")
+    value: Union[float, str] = Field(
+        description="Numeric value or formatted area string (e.g. '14-10' or '00-08-09'). If missing, set to 'N/A'"
+    )
+    unit: str = Field(
+        description="Specific measurement unit (e.g. 'Kanal-Marla' or 'बीघा.बि.बि.' or 'Acre'). NEVER include options or parentheses"
+    )
 
 
 class OwnershipDetails(BaseModel):
@@ -50,36 +55,37 @@ class ExtractedRecordSchema(BaseModel):
         description="Details of the landowner"
     )
     khata_number: str = Field(
-        description="Owner account number from Khewat / Khatauni (e.g. '1/1')"
+        description="Owner account number from Khewat / Khatauni (e.g. '1/1' or '15'). If missing, set to 'N/A'"
     )
     khasra_number: str = Field(
-        description="All Khasra plot numbers listed in the table, comma-separated (e.g. '274, 276, 544, 546, 547')"
+        description="All Khasra plot numbers listed in the table, comma-separated (e.g. '247// 1, 2, 9/1, 10/1' or '274, 276, 544'). If missing, set to 'N/A'"
     )
     survey_number: Optional[str] = Field(
         default=None,
         description="South/West style identifier (e.g. Survey Number or Gat Number)"
     )
     village: str = Field(
-        description="Name of the village / Mohal (e.g. 'अणु')"
+        description="Name of the village / Mohal (e.g. 'Deon' or 'अणु'). If missing, set to 'N/A'"
     )
     tehsil: str = Field(
-        description="Name of the sub-district / tehsil / taluka (e.g. 'बल्ह')"
+        description="Name of the sub-district / tehsil / taluka (e.g. 'Bathinda' or 'बल्ह'). If missing, set to 'N/A'"
     )
     district: str = Field(
-        description="Name of the district / zilla (e.g. 'मण्डी')"
+        description="Name of the district / zilla (e.g. 'Bathinda' or 'मण्डी'). If missing, set to 'N/A'"
     )
     plot_area: PlotArea = Field(
         description="Plot area size and unit"
     )
     land_classification: Optional[str] = Field(
-        default="कृषि / धान्नी, कुलाहू",
-        description="Classification of the land, e.g. agricultural, residential, irrigated, barren"
+        default=None,
+        description="Classification of the land, e.g. agricultural, irrigated, unirrigated, residential"
     )
     ownership_details: Optional[OwnershipDetails] = Field(
         default=None,
         description="Ownership type and share details if available"
     )
-    field_confidences: FieldConfidences = Field(
+    field_confidences: Optional[FieldConfidences] = Field(
+        default_factory=FieldConfidences,
         description="Confidence scores between 0.0 and 1.0 for each extracted field"
     )
 

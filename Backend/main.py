@@ -4,11 +4,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from sqlalchemy import String, or_
 from sqlalchemy.orm import Session
+
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from ai_service import extract_document_data
 from database import get_db, init_db
-from models import Document, DocumentStatusEnum, ExtractedRecord, RegionEnum
+from models import Document, DocumentStatusEnum, ExtractedRecord, RegionEnum, ValidationResult
+from validation_engine import run_all_validations
 
 # Ensure upload directory exists
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploaded_images"
@@ -27,6 +32,18 @@ app = FastAPI(
     description="Extracts structured data from Indian land records using local Qwen 2.5 VL via Ollama",
     lifespan=lifespan,
 )
+
+# Enable CORS for React frontend (localhost:3000, localhost:5173, etc.)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve uploaded images statically so the frontend can render them next to the table
+app.mount("/uploaded_images", StaticFiles(directory=str(UPLOAD_DIR)), name="uploaded_images")
 
 
 @app.get("/health")
@@ -89,20 +106,14 @@ async def upload_document(
             detail=f"Document extraction failed: {str(exc)}",
         )
 
-    # 5. Compute overall confidence score
-    field_confs = extracted_data.get("field_confidences", {})
-    overall_conf = 0.9
-    if isinstance(field_confs, dict) and field_confs:
-        scores = [float(v) for v in field_confs.values() if isinstance(v, (int, float))]
-        if scores:
-            overall_conf = round(sum(scores) / len(scores), 2)
-
-    # 6. Flag or verify document based on 0.65 threshold (spec Section 8)
-    doc.status = (
-        DocumentStatusEnum.verified
-        if overall_conf >= 0.65
-        else DocumentStatusEnum.flagged
+    # 5. Run Validation Rules Engine (Section 7 & 8 of Spec)
+    rule_results, ui_fields, overall_status, overall_conf = run_all_validations(
+        db=db, doc_id=doc.id, extracted_data=extracted_data
     )
+
+    # 6. Update document status
+    doc.status = DocumentStatusEnum(overall_status)
+    doc.overall_confidence = overall_conf
 
     # 7. Save extracted record to database
     record = ExtractedRecord(
@@ -118,15 +129,263 @@ async def upload_document(
         district=extracted_data.get("district"),
         land_classification=extracted_data.get("land_classification"),
         ownership_details=extracted_data.get("ownership_details"),
-        field_confidences=field_confs,
+        field_confidences=extracted_data.get("field_confidences") or {},
         overall_confidence=overall_conf,
     )
     db.add(record)
+
+    # 8. Save validation results to database
+    for r in rule_results:
+        validation_entry = ValidationResult(
+            id=uuid.uuid4(),
+            document_id=doc.id,
+            rule_name=r["rule_name"],
+            passed=r["passed"],
+            detail=r.get("detail", ""),
+        )
+        db.add(validation_entry)
+
+    db.commit()
+
+    # 9. Return Section 2b API Response contract directly powering the UI
+    return {
+        "document_id": str(doc.id),
+        "status": doc.status.value,
+        "region": doc.region.value,
+        "fields": ui_fields,
+        "validation_flags": rule_results,
+        "extracted_data": extracted_data,
+    }
+
+
+@app.get("/stats")
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    """
+    Powers the 3 dashboard cards in the UI drawer (Section 2a & 2b of Spec):
+    - uploaded_count: Total land documents uploaded to the system
+    - committed_count: Documents verified and finalized to the database
+    - pending_count: Documents currently flagged or requiring review
+    """
+    total_uploaded = db.query(Document).count()
+    committed_count = db.query(Document).filter(Document.status == DocumentStatusEnum.committed).count()
+    flagged_count = db.query(Document).filter(Document.status == DocumentStatusEnum.flagged).count()
+    uploaded_only = db.query(Document).filter(Document.status == DocumentStatusEnum.uploaded).count()
+    verified_count = db.query(Document).filter(Document.status == DocumentStatusEnum.verified).count()
+    failed_count = db.query(Document).filter(Document.status == DocumentStatusEnum.failed).count()
+
+    # Pending: flagged + unreviewed uploads
+    pending_count = flagged_count + uploaded_only
+
+    # Average confidence score across all records (normalized to 0.0 - 1.0)
+    records = db.query(ExtractedRecord.overall_confidence).filter(ExtractedRecord.overall_confidence.isnot(None)).all()
+    avg_conf = 0.0
+    if records:
+        valid_scores = []
+        for r in records:
+            score = float(r[0])
+            if score > 10.0:
+                score = score / 100.0
+            elif score > 1.0:
+                score = score / 10.0
+            valid_scores.append(min(max(score, 0.0), 1.0))
+        if valid_scores:
+            avg_conf = round(sum(valid_scores) / len(valid_scores), 2)
+
+    return {
+        "uploaded_count": total_uploaded,
+        "committed_count": committed_count,
+        "pending_count": pending_count,
+        "verified_count": verified_count,
+        "flagged_count": flagged_count,
+        "failed_count": failed_count,
+        "avg_confidence": avg_conf,
+    }
+
+
+@app.patch("/documents/{document_id}/commit")
+def commit_document(document_id: str, db: Session = Depends(get_db)):
+    """
+    Called when the user clicks 'Commit to Database' on the UI table.
+    Transitions document status to 'committed' and updates stats.
+    """
+    try:
+        doc_uuid = uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid UUID format")
+
+    doc = db.query(Document).filter(Document.id == doc_uuid).first()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    doc.status = DocumentStatusEnum.committed
     db.commit()
 
     return {
         "document_id": str(doc.id),
         "status": doc.status.value,
+    }
+
+
+@app.get("/documents")
+def list_documents(
+    status_filter: str = None,
+    region_filter: str = None,
+    db: Session = Depends(get_db),
+):
+    """List all uploaded documents with status and metadata."""
+    query = db.query(Document)
+    if status_filter:
+        query = query.filter(Document.status == status_filter)
+    if region_filter:
+        query = query.filter(Document.region == region_filter)
+
+    docs = query.order_by(Document.uploaded_at.desc()).all()
+    return [
+        {
+            "id": str(d.id),
+            "filename": d.filename,
+            "region": d.region.value,
+            "status": d.status.value,
+            "image_url": f"/uploaded_images/{Path(d.image_path).name}" if d.image_path else None,
+            "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
+        }
+        for d in docs
+    ]
+
+
+@app.get("/documents/search")
+def search_documents(
+    query: str,
+    type: str = "all",
+    db: Session = Depends(get_db),
+):
+    """
+    Search digitized land records (Section 11a of Spec).
+    - type=id: exact or substring match on document_id, khasra_number, or survey_number
+    - type=name: substring match on landowner name (works across English and Hindi text)
+    - type=place: match on village, tehsil, or district
+    - type=all: searches across all fields simultaneously
+    """
+    clean_q = query.strip()
+    if not clean_q:
+        return []
+
+    # Join ExtractedRecord with Document
+    base_query = db.query(ExtractedRecord, Document).join(
+        Document, ExtractedRecord.document_id == Document.id
+    )
+
+    filters = []
+
+    # 1. ID Filter
+    if type in ["id", "all"]:
+        id_filters = [
+            ExtractedRecord.khasra_number.ilike(f"%{clean_q}%"),
+            ExtractedRecord.survey_number.ilike(f"%{clean_q}%"),
+            ExtractedRecord.khata_number.ilike(f"%{clean_q}%"),
+        ]
+        try:
+            target_uuid = uuid.UUID(clean_q)
+            id_filters.append(Document.id == target_uuid)
+        except ValueError:
+            pass
+        if type == "id":
+            filters.append(or_(*id_filters))
+        else:
+            filters.extend(id_filters)
+
+    # 2. Name Filter
+    if type in ["name", "all"]:
+        name_filter = ExtractedRecord.landowner_details.cast(String).ilike(f"%{clean_q}%")
+        filters.append(name_filter)
+
+    # 3. Place Filter
+    if type in ["place", "all"]:
+        place_filters = [
+            ExtractedRecord.village.ilike(f"%{clean_q}%"),
+            ExtractedRecord.tehsil.ilike(f"%{clean_q}%"),
+            ExtractedRecord.district.ilike(f"%{clean_q}%"),
+        ]
+        if type == "place":
+            filters.append(or_(*place_filters))
+        else:
+            filters.extend(place_filters)
+
+    if filters:
+        base_query = base_query.filter(or_(*filters))
+
+    results = base_query.order_by(Document.uploaded_at.desc()).limit(50).all()
+
+    output = []
+    for record, doc in results:
+        output.append({
+            "document_id": str(doc.id),
+            "filename": doc.filename,
+            "region": doc.region.value,
+            "status": doc.status.value,
+            "overall_confidence": record.overall_confidence,
+            "landowner_details": record.landowner_details,
+            "khasra_number": record.khasra_number,
+            "khata_number": record.khata_number,
+            "survey_number": record.survey_number,
+            "plot_area": record.plot_area,
+            "village": record.village,
+            "tehsil": record.tehsil,
+            "district": record.district,
+            "land_classification": record.land_classification,
+            "image_url": f"/uploaded_images/{Path(doc.image_path).name}" if doc.image_path else None,
+            "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+        })
+
+    return output
+
+
+@app.get("/documents/{document_id}")
+def get_document(document_id: str, db: Session = Depends(get_db)):
+    """Fetch complete extraction, flags, and image URL for a document."""
+    try:
+        doc_uuid = uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid UUID format")
+
+    doc = db.query(Document).filter(Document.id == doc_uuid).first()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    record = db.query(ExtractedRecord).filter(ExtractedRecord.document_id == doc_uuid).first()
+    validations = db.query(ValidationResult).filter(ValidationResult.document_id == doc_uuid).all()
+
+    extracted_dict = {}
+    if record:
+        extracted_dict = {
+            "landowner_details": record.landowner_details,
+            "khasra_number": record.khasra_number,
+            "khata_number": record.khata_number,
+            "survey_number": record.survey_number,
+            "plot_area": record.plot_area,
+            "village": record.village,
+            "tehsil": record.tehsil,
+            "district": record.district,
+            "land_classification": record.land_classification,
+            "ownership_details": record.ownership_details,
+            "field_confidences": record.field_confidences,
+            "overall_confidence": record.overall_confidence,
+        }
+
+    return {
+        "document_id": str(doc.id),
+        "filename": doc.filename,
         "region": doc.region.value,
-        "extracted_data": extracted_data,
+        "status": doc.status.value,
+        "image_url": f"/uploaded_images/{Path(doc.image_path).name}" if doc.image_path else None,
+        "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+        "extracted_data": extracted_dict,
+        "validation_flags": [
+            {
+                "rule_name": v.rule_name,
+                "passed": v.passed,
+                "detail": v.detail,
+            }
+            for v in validations
+        ],
     }

@@ -47,5 +47,16 @@ def init_db():
             with engine.begin() as conn:
                 if "overall_confidence" not in columns_er:
                     conn.execute(text("ALTER TABLE extracted_records ADD COLUMN overall_confidence FLOAT DEFAULT 0.9"))
+                if "land_classification" not in columns_er:
+                    conn.execute(text("ALTER TABLE extracted_records ADD COLUMN land_classification VARCHAR"))
+                if "ownership_details" not in columns_er:
+                    conn.execute(text("ALTER TABLE extracted_records ADD COLUMN ownership_details JSON"))
+                if "mutation_records" not in columns_er:
+                    conn.execute(text("ALTER TABLE extracted_records ADD COLUMN mutation_records JSON"))
+                if "registration_information" not in columns_er:
+                    conn.execute(text("ALTER TABLE extracted_records ADD COLUMN registration_information JSON"))
+                # Clean up legacy confidence values stored on 1-10 or 1-100 scales
+                conn.execute(text("UPDATE extracted_records SET overall_confidence = overall_confidence / 10.0 WHERE overall_confidence > 1.0 AND overall_confidence <= 10.0"))
+                conn.execute(text("UPDATE extracted_records SET overall_confidence = overall_confidence / 100.0 WHERE overall_confidence > 10.0"))
     except Exception:
         pass

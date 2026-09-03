@@ -61,12 +61,12 @@ def extract_document_data(image_path: str) -> dict:
 
     user_prompt = (
         "Extract structured land record data from this document image into the JSON schema.\n"
-        "Bilingual Instructions:\n"
+        "Key Extraction Rules:\n"
+        "- Location: Look at the document header and extract District, Tehsil, and Village (e.g. Village: 'Deon', Tehsil: 'Bathinda', District: 'Bathinda' or ज़िला: 'मण्डी', तहसील: 'बल्ह', मोहाल: 'अणु'). NEVER leave them null.\n"
         "- Landowners: Look for 'Name of Owner' / 'Owner Details' / 'नाम मालिक व एहवाल :'. Extract all co-owner names separated by commas.\n"
         "- Khata Number: Read from 'Khewat No.' / 'Khatauni No.' / 'खेवट न.'.\n"
         "- Khasra Numbers: Read all plot numbers from the 'Khasra No.' / 'नाम खसरा हाल' column.\n"
-        "- Plot Area: Set unit to 'Kanal-Marla' (or 'Bigha-Biswa' / 'Acre'). Set value to the numeric area ('14-10' or '5-8, 2-10, 3-16, 2-16'). Put 'irrigated' into 'land_classification'.\n"
-        "- Location: Extract District, Tehsil, and Village from their headers.\n\n"
+        "- Plot Area: Set 'unit' to the single applicable unit ('Kanal-Marla' or 'बीघा.बि.बि.' or 'Acre'). Set 'value' to the area ('14-10' or '00-08-09'). Put 'irrigated' or soil type into 'land_classification'.\n\n"
         "Return the extracted data as a valid JSON object matching the schema."
     )
 
@@ -87,13 +87,13 @@ def extract_document_data(image_path: str) -> dict:
         "stream": False,
         "options": {
             "temperature": 0.0,
-            "num_ctx": 8192,
+            "num_ctx": 6144,
             "num_predict": 2048,
         },
     }
 
     try:
-        with httpx.Client(timeout=180.0) as client:
+        with httpx.Client(timeout=300.0) as client:
             response = client.post(f"{base_url}/api/chat", json=payload)
             response.raise_for_status()
             result = response.json()

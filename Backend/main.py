@@ -3,6 +3,8 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from typing import Optional
+
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import String, or_
 from sqlalchemy.orm import Session
@@ -12,7 +14,15 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_service import extract_document_data
 from database import get_db, init_db
-from models import Document, DocumentStatusEnum, ExtractedRecord, RegionEnum, ValidationResult
+from models import (
+    CorrectionExample,
+    Document,
+    DocumentStatusEnum,
+    ExtractedRecord,
+    RegionEnum,
+    ValidationResult,
+)
+from schemas.schemas import CommitRequest
 from validation_engine import run_all_validations
 
 # Ensure upload directory exists
@@ -33,10 +43,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for React frontend (localhost:3000, localhost:5173, etc.)
+# Enable CORS for React frontend (localhost:5173, localhost:3000, etc.)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,9 +111,9 @@ async def upload_document(
     db.commit()
     db.refresh(doc)
 
-    # 4. Call Ollama Qwen 2.5 VL extraction
+    # 4. Call Ollama Qwen 2.5 VL extraction with in-context few-shot learning
     try:
-        extracted_data = extract_document_data(str(file_path))
+        extracted_data = extract_document_data(str(file_path), region=doc.region.value)
     except Exception as exc:
         doc.status = DocumentStatusEnum.flagged
         db.commit()
@@ -123,11 +139,11 @@ async def upload_document(
         survey_number=extracted_data.get("survey_number"),
         khasra_number=extracted_data.get("khasra_number"),
         khata_number=extracted_data.get("khata_number"),
+        khatauni_number=extracted_data.get("khatauni_number"),
         plot_area=extracted_data.get("plot_area"),
         village=extracted_data.get("village"),
         tehsil=extracted_data.get("tehsil"),
         district=extracted_data.get("district"),
-        land_classification=extracted_data.get("land_classification"),
         ownership_details=extracted_data.get("ownership_details"),
         field_confidences=extracted_data.get("field_confidences") or {},
         overall_confidence=overall_conf,
@@ -203,10 +219,15 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
 
 
 @app.patch("/documents/{document_id}/commit")
-def commit_document(document_id: str, db: Session = Depends(get_db)):
+def commit_document(
+    document_id: str,
+    payload: Optional[CommitRequest] = None,
+    db: Session = Depends(get_db),
+):
     """
-    Called when the user clicks 'Commit to Database' on the UI table.
-    Transitions document status to 'committed' and updates stats.
+    Called when the user clicks 'Commit to Database' on the UI table (Section 2b & 9).
+    Accepts human corrections, logs divergences into CorrectionExample for few-shot learning,
+    updates ExtractedRecord, and transitions document status to 'committed'.
     """
     try:
         doc_uuid = uuid.UUID(document_id)
@@ -217,12 +238,74 @@ def commit_document(document_id: str, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
+    record = db.query(ExtractedRecord).filter(ExtractedRecord.document_id == doc_uuid).first()
+    corrections_logged = 0
+
+    if payload and payload.corrections and record:
+        for field_name, new_val in payload.corrections.items():
+            original_val = None
+
+            # 1. Handle landowner details name
+            if field_name == "landowner_details.name":
+                owner_dict = dict(record.landowner_details) if isinstance(record.landowner_details, dict) else {}
+                original_val = owner_dict.get("name")
+                if str(new_val).strip() != str(original_val).strip():
+                    owner_dict["name"] = new_val
+                    record.landowner_details = owner_dict
+                    db.add(CorrectionExample(
+                        id=uuid.uuid4(),
+                        region=doc.region.value,
+                        field_name="landowner_details.name",
+                        ocr_snippet="नाम मालिक व एहवाल",
+                        wrong_value=str(original_val),
+                        corrected_value=str(new_val),
+                    ))
+                    corrections_logged += 1
+
+            # 2. Handle plot area
+            elif field_name in ["plot_area", "plot_area.value"]:
+                area_dict = dict(record.plot_area) if isinstance(record.plot_area, dict) else {}
+                if isinstance(new_val, dict):
+                    original_val = area_dict
+                    record.plot_area = new_val
+                else:
+                    original_val = area_dict.get("value")
+                    area_dict["value"] = new_val
+                    record.plot_area = area_dict
+
+                if str(new_val).strip() != str(original_val).strip():
+                    db.add(CorrectionExample(
+                        id=uuid.uuid4(),
+                        region=doc.region.value,
+                        field_name="plot_area",
+                        ocr_snippet="रकबा / Area",
+                        wrong_value=str(original_val),
+                        corrected_value=str(new_val),
+                    ))
+                    corrections_logged += 1
+
+            # 3. Handle scalar fields (khasra_number, village, tehsil, district, etc.)
+            elif hasattr(record, field_name):
+                original_val = getattr(record, field_name)
+                if str(new_val).strip() != str(original_val).strip():
+                    setattr(record, field_name, new_val)
+                    db.add(CorrectionExample(
+                        id=uuid.uuid4(),
+                        region=doc.region.value,
+                        field_name=field_name,
+                        ocr_snippet=field_name,
+                        wrong_value=str(original_val),
+                        corrected_value=str(new_val),
+                    ))
+                    corrections_logged += 1
+
     doc.status = DocumentStatusEnum.committed
     db.commit()
 
     return {
         "document_id": str(doc.id),
         "status": doc.status.value,
+        "corrections_logged": corrections_logged,
     }
 
 
@@ -283,6 +366,7 @@ def search_documents(
             ExtractedRecord.khasra_number.ilike(f"%{clean_q}%"),
             ExtractedRecord.survey_number.ilike(f"%{clean_q}%"),
             ExtractedRecord.khata_number.ilike(f"%{clean_q}%"),
+            ExtractedRecord.khatauni_number.ilike(f"%{clean_q}%"),
         ]
         try:
             target_uuid = uuid.UUID(clean_q)
@@ -327,12 +411,12 @@ def search_documents(
             "landowner_details": record.landowner_details,
             "khasra_number": record.khasra_number,
             "khata_number": record.khata_number,
+            "khatauni_number": record.khatauni_number,
             "survey_number": record.survey_number,
             "plot_area": record.plot_area,
             "village": record.village,
             "tehsil": record.tehsil,
             "district": record.district,
-            "land_classification": record.land_classification,
             "image_url": f"/uploaded_images/{Path(doc.image_path).name}" if doc.image_path else None,
             "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
         })
@@ -361,16 +445,41 @@ def get_document(document_id: str, db: Session = Depends(get_db)):
             "landowner_details": record.landowner_details,
             "khasra_number": record.khasra_number,
             "khata_number": record.khata_number,
+            "khatauni_number": record.khatauni_number,
             "survey_number": record.survey_number,
             "plot_area": record.plot_area,
             "village": record.village,
             "tehsil": record.tehsil,
             "district": record.district,
-            "land_classification": record.land_classification,
             "ownership_details": record.ownership_details,
             "field_confidences": record.field_confidences,
             "overall_confidence": record.overall_confidence,
         }
+
+    confs = (record.field_confidences if record else {}) or {}
+    owner_details = (record.landowner_details if record else {}) or {}
+    owner_name = owner_details.get("name") if isinstance(owner_details, dict) else None
+
+    raw_fields = [
+        ("landowner_details.name", owner_name, confs.get("landowner_details", 0.68)),
+        ("khata_number", record.khata_number if record else None, confs.get("khata_number", 0.80)),
+        ("khatauni_number", record.khatauni_number if record else None, confs.get("khatauni_number", 0.80)),
+        ("khasra_number", record.khasra_number if record else None, confs.get("khasra_number", 0.82)),
+        ("plot_area", record.plot_area if record else None, confs.get("plot_area", 0.76)),
+        ("village", record.village if record else None, confs.get("village", 0.86)),
+        ("tehsil", record.tehsil if record else None, confs.get("tehsil", 0.87)),
+        ("district", record.district if record else None, confs.get("district", 0.88)),
+    ]
+    ui_fields = []
+    for f_name, f_val, f_conf in raw_fields:
+        is_empty = not f_val or str(f_val).strip().lower() in ("none", "null", "n/a", "")
+        conf_val = float(f_conf) if isinstance(f_conf, (int, float)) else 0.75
+        ui_fields.append({
+            "field_name": f_name,
+            "value": f_val,
+            "confidence": round(conf_val, 2) if not is_empty else 0.0,
+            "status": "confident" if (not is_empty and conf_val >= 0.7) else "unsure",
+        })
 
     return {
         "document_id": str(doc.id),
@@ -379,6 +488,7 @@ def get_document(document_id: str, db: Session = Depends(get_db)):
         "status": doc.status.value,
         "image_url": f"/uploaded_images/{Path(doc.image_path).name}" if doc.image_path else None,
         "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+        "fields": ui_fields,
         "extracted_data": extracted_dict,
         "validation_flags": [
             {

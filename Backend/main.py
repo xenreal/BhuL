@@ -79,8 +79,14 @@ async def upload_document(
     the document metadata and extracted records into SQLite, and returns
     the extracted JSON.
     """
-    # 1. Save uploaded file to disk with unique UUID filename
-    file_ext = Path(file.filename).suffix if file.filename else ".jpg"
+    # 1. Validate file extension (JPG, PNG, WEBP)
+    file_ext = (Path(file.filename).suffix if file.filename else ".jpg").lower()
+    if file_ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file format '{file_ext}'. Please upload an image scan in JPG, PNG, or WEBP format."
+        )
+
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = UPLOAD_DIR / unique_filename
 

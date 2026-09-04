@@ -35,9 +35,9 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
 
   const validateAndSetFile = (file: File) => {
     setFileError(null)
-    const validTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg", "application/pdf"]
-    if (!validTypes.includes(file.type) && !file.name.match(/\.(jpg|jpeg|png|webp|pdf)$/i)) {
-      setFileError("Please upload a valid image file (JPG, PNG, WEBP) or PDF scan.")
+    const validTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg"]
+    if (!validTypes.includes(file.type) && !file.name.match(/\.(jpg|jpeg|png|webp)$/i)) {
+      setFileError("Please upload a valid image file (JPG, PNG, or WEBP).")
       return
     }
     // Limit file size to 25MB
@@ -113,7 +113,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,.pdf"
+          accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
           className="hidden"
           onChange={handleFileInputChange}
           disabled={!isLoggedIn || isLoading}
@@ -276,7 +276,6 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
                   <span className="px-2 py-0.5 rounded bg-slate-100 font-mono">JPG</span>
                   <span className="px-2 py-0.5 rounded bg-slate-100 font-mono">PNG</span>
                   <span className="px-2 py-0.5 rounded bg-slate-100 font-mono">WEBP</span>
-                  <span className="px-2 py-0.5 rounded bg-slate-100 font-mono">PDF</span>
                   <span>(up to 25MB)</span>
                 </div>
               </div>

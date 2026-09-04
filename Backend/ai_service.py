@@ -12,8 +12,9 @@ from schemas import ExtractedRecordSchema
 
 def get_recent_corrections(region: str = "north_central", limit: int = 5) -> str:
     """
-    Fetches the most recent human corrections from SQLite to inject into
-    the VLM extraction prompt (Section 9 In-Context Few-Shot Learning).
+    Fetches recent human corrections from SQLite to inject into the VLM extraction prompt
+    (Section 9 In-Context Few-Shot Learning).
+    Restricted to general formatting and unit lessons to prevent entity names/numbers from leaking across documents.
     """
     try:
         from database import SessionLocal
@@ -21,6 +22,7 @@ def get_recent_corrections(region: str = "north_central", limit: int = 5) -> str
         with SessionLocal() as db:
             corrections = (
                 db.query(CorrectionExample)
+                .filter(CorrectionExample.region == region)
                 .order_by(CorrectionExample.created_at.desc())
                 .limit(limit)
                 .all()
@@ -28,14 +30,15 @@ def get_recent_corrections(region: str = "north_central", limit: int = 5) -> str
             if not corrections:
                 return ""
 
-            lines = [
-                "CRITICAL: Learn from these past human corrections our system received to avoid repeating mistakes:"
-            ]
+            lines = []
             for c in corrections:
-                lines.append(
-                    f'- Field "{c.field_name}": previous extraction mistakenly got "{c.wrong_value}" -> Human corrected it to: "{c.corrected_value}".'
-                )
-            return "\n".join(lines)
+                if c.field_name in ["plot_area.unit", "plot_area.value"]:
+                    lines.append(
+                        f'- Field "{c.field_name}": do not mistake crop or descriptive text like "{c.wrong_value}" for units; format as "{c.corrected_value}".'
+                    )
+            if not lines:
+                return ""
+            return "FORMATTING LESSONS FROM VERIFICATION:\n" + "\n".join(lines)
     except Exception:
         return ""
 
@@ -81,11 +84,7 @@ def sanitize_extracted_record(data: dict) -> dict:
             if len(km_pairs) > 1:
                 cleaned_val = ", ".join(f"{k}-{m}" for k, m in km_pairs)
             elif len(km_pairs) == 1:
-                # If only '22-0' was extracted on the Bathinda Deon sheet, expand to known sub-plot areas
-                if km_pairs[0] == ("22", "0") and ("Deon" in str(data.get("village", "")) or str(data.get("khata_number", "")) == "4"):
-                    cleaned_val = "5-13, 2-0, 2-0, 12-7"
-                else:
-                    cleaned_val = f"{km_pairs[0][0]}-{km_pairs[0][1]}"
+                cleaned_val = f"{km_pairs[0][0]}-{km_pairs[0][1]}"
             plot_area["value"] = cleaned_val
 
     # 4. Remove land_classification completely
@@ -120,59 +119,43 @@ def extract_document_data(image_path: str, region: str = "north_central") -> dic
     schema = ExtractedRecordSchema.model_json_schema()
 
     system_instruction = (
-        "You are an expert Indian land revenue records (Jamabandi / ROR / 7/12 / Patta) extraction AI.\n"
-        "Extract all structured fields from this document image (in English or Hindi) into the exact JSON schema provided.\n\n"
-        "BILINGUAL FIELD EXTRACTION ANCHORS:\n"
+        "You are an expert Indian land revenue records (Jamabandi / RoR / 7/12 / Patta) extraction AI.\n"
+        "Extract all structured fields from this document image (in English or Hindi) into the exact JSON schema provided.\n"
+        "Rely SOLELY on the visible text printed in this specific document image. Never make up or reuse data from other documents.\n\n"
+        "COLUMN MAPPING & EXTRACTION RULES:\n"
         "1. LANDOWNER NAMES (CRITICAL: EXTRACT OWNER, NEVER CULTIVATOR):\n"
-        "   - IN ENGLISH DOCUMENTS (e.g. Punjab/Haryana/Himachal/Rajasthan):\n"
-        "     * Look strictly at Column 4: 'Name of the owner and detail' / 'Name of the owner and address'. THIS IS THE LEGAL LANDOWNER!\n"
-        "       Example: 'Jagga Singh son of Mahla Singh son of Godha Singh 1/18 share, Left equal share 17/18 share'.\n"
-        "       Extract landowner_details.name as 'Jagga Singh', father_name as 'Mahla Singh'.\n"
-        "     * STRICTLY FORBIDDEN TO EXTRACT FROM Column 5: 'Name & Detail of the Person who cultivates the land'.\n"
-        "       Entries starting with 'Cultivate ...' (e.g. 'Cultivate Ruldu Singh', 'Cultivate Nachattar Singh', 'Cultivate Jora Singh') are CULTIVATORS / TENANTS, NOT the owners!\n"
-        "       NEVER set landowner_details.name to any cultivator name from Column 5!\n"
-        "   - IN HINDI DOCUMENTS:\n"
-        "     * Look strictly at 'नाम मालिक व एहवाल :' ('मालिक' literally means Property Owner).\n"
-        "     * Extract all owner names appearing before 'पुत्र' or 'पुत्रान' (e.g. 'लीला प्रकाश, माधविन्द्र, कृष्ण चन्द').\n"
-        "     * STRICTLY AVOID 'नाम काश्तकार' (Cultivator) and 'नाम पत्ती या तरफ मय नाम नम्बरदार' (Numberdar / village headman).\n"
-        "   - Exclude father/grandfather names ('son of ...' / 'पुत्र...'), shares, and residence from the name string.\n"
-        "   - Put co-owner shares (e.g. '1/18 share, Left equal share 17/18 share' or '1/3 share each') into ownership_details.shares.\n\n"
+        "   - Look at Column 4: 'Name of the owner and detail' / 'Name of the owner and address' / 'नाम मालिक व एहवाल'. THIS CONTAINS THE LEGAL LANDOWNER(S).\n"
+        "   - Extract ONLY the legal owners into landowner_details.name. In Hindi documents, owner names appear before 'पुत्र' or 'पुत्रान'.\n"
+        "   - STRICTLY AVOID Column 5: 'Name & Detail of the Person who cultivates the land' / 'नाम काश्तकार'. Cultivators/tenants (entries starting with 'Cultivate ...' or 'काश्तकार') are NOT owners. NEVER put cultivator names into landowner_details.name.\n"
+        "   - Exclude relation prefixes ('son of', 'पुत्र'), shares, and addresses from the name string itself.\n"
+        "   - If fractional shares are stated in the owner column, extract them into ownership_details.share.\n\n"
         "2. KHATA / KHEWAT NUMBER vs KHATAUNI NUMBER:\n"
-        "   - KHATA NUMBER (खेवट / खाता संख्या):\n"
-        "     * Look strictly at Column 1: 'Khevat No.' / 'Khewat No.' / 'खेवट नं.' (e.g. '4' or '1/1').\n"
-        "     * This represents the proprietary owner's account number. NEVER extract Column 2 numbers here!\n"
-        "   - KHATAUNI NUMBER (खतौनी संख्या - MANDATORY FIELD):\n"
-        "     * Look strictly at Column 2: 'Khautani No.' / 'Khatauni No.' / 'खतौनी नं.' (e.g. '7, 8, 10, 13').\n"
-        "     * Extract ALL holding account numbers listed down Column 2 separated by commas (e.g. '7, 8, 10, 13').\n"
-        "     * NEVER leave khatauni_number null or empty!\n\n"
+        "   - KHATA / KHEWAT NUMBER: Look at Column 1 ('Khewat No.' / 'Khevat No.' / 'खेवट नं'). This is the proprietary owner holding number.\n"
+        "   - KHATAUNI NUMBER: Look at Column 2 ('Khatauni No.' / 'Khautani No.' / 'खतौनी नं'). This is the cultivator holding number. Extract all holding numbers listed down Column 2, separated by commas. Never leave empty if numbers are visible in Column 2.\n"
+        "   - Never mix up Column 1 (Khewat) and Column 2 (Khatauni).\n\n"
         "3. KHASRA PLOT NUMBERS:\n"
-        "   - In the table, look at Column 7: 'Khasra Number' / 'Survey No.' / 'नाम खसरा हाल'. Extract all plot numbers (e.g. '64//9/3/2/1, 10/2, 10/3, 64//19/2, 64//10/3, 11, 21, 12/1, 20').\n\n"
-        "4. PLOT AREA (रकबा) - LIST ALL SUB-PLOT AREAS:\n"
-        "   - Look at Column 8: 'Total of every field Area and Type of Crop'.\n"
-        "   - LIST ALL SUB-PLOT HOLDING AREAS: Extract all distinct sub-plot areas separated by commas (e.g., '5-13, 2-0, 2-0, 12-7').\n"
-        "   - DO NOT collapse or sum them into a single total like '22-0'! Keep each sub-plot area listed individually so they map to their Khasra plots.\n"
-        "   - STRIP WORDS: NEVER include words like 'irrigated', 'unirrigated', 'chahi', 'nahri', 'barani'. 'value' must contain ONLY comma-separated sub-plot area numbers (e.g. '5-13, 2-0, 2-0, 12-7').\n"
-        "   - UNIT: Set to 'Kanal-Marla' for hyphenated values (or 'Bigha-Biswa' / 'Acre'). NEVER set unit to 'irrigated'.\n\n"
-        "5. GEOGRAPHY:\n"
-        "   - District: from 'District:' / 'District Bathinda' / 'ज़िला:'\n"
-        "   - Tehsil: from 'Tehsil:' / 'Tehsil Bathinda' / 'तहसील:'\n"
-        "   - Village: from 'Village:' / 'Village Deon' / 'मोहाल:' / 'मौजा:'\n\n"
-        "6. Preserve original script as written on the document (English text as English, Hindi text as Hindi). Never transliterate or invent text."
+        "   - Look at Column 7: 'Khasra Number' / 'Survey No.' / 'नाम खसरा हाल'. Extract all plot numbers listed in the table, separated by commas.\n\n"
+        "4. PLOT AREA (रकबा):\n"
+        "   - Look at Column 8: 'Total of every field Area and Type of Crop' / 'रकबा व किस्म ज़मीन'.\n"
+        "   - Extract all distinct sub-plot area measurements, separated by commas. Do NOT sum them into a single total if individual sub-plots are listed.\n"
+        "   - Strip all descriptive non-numeric soil/crop words (such as 'irrigated', 'unirrigated', 'chahi', 'nahri', 'barani', 'रकबा', 'सिंचित', 'असिंचित').\n"
+        "   - Determine the measurement unit as printed on the document (e.g. 'Kanal-Marla', 'Bigha-Biswa', 'Acre', 'Hectare').\n\n"
+        "5. GEOGRAPHY / LOCATION:\n"
+        "   - Extract District, Tehsil, and Village from the document header / top section.\n\n"
+        "6. SCRIPT & FIDELITY:\n"
+        "   - Preserve original script (English as English, Hindi as Hindi). Never transliterate names or invent text."
     )
 
     user_prompt = (
-        "Extract structured land record data from this document image into the JSON schema.\n"
-        "CRITICAL RULES:\n"
-        "- LANDOWNER vs CULTIVATOR (MANDATORY):\n"
-        "  * Extract ONLY the legal OWNER from Column 4 ('Name of the owner and detail' / 'नाम मालिक व एहवाल'). E.g. 'Jagga Singh' (or 'लीला प्रकाश, माधविन्द्र, कृष्ण चन्द').\n"
-        "  * NEVER extract the cultivator from Column 5 ('Name & Detail of the Person who cultivates the land' / 'नाम काश्तकार'). Ignore all entries starting with 'Cultivate ...' (e.g. DO NOT extract 'Ruldu Singh', 'Nachattar Singh', 'Jora Singh').\n"
-        "- Khata / Khewat Number: Strictly from Column 1 ('Khevat No.' / 'खेवट नं', e.g. '4'). This is the Owner's Account Number.\n"
-        "- Khatauni Number (MANDATORY): Strictly from Column 2 ('Khautani No.' / 'खतौनी नं', e.g. '7, 8, 10, 13'). Extract ALL numbers listed down Column 2, comma-separated.\n"
-        "- Khasra Numbers: Read all plot numbers from Column 7 ('Khasra Number' / 'नाम खसरा हाल').\n"
-        "- Plot Area (रकबा): Look at Column 8 ('Total of every field Area and Type of Crop'). List all distinct sub-plot areas separated by commas (e.g. '5-13, 2-0, 2-0, 12-7'). Do NOT sum them into a single total like '22-0'. NEVER include the word 'irrigated'. Set 'unit' to 'Kanal-Marla' and 'value' to '5-13, 2-0, 2-0, 12-7'.\n"
-        "- Location: Look at the document header and extract District, Tehsil, and Village (e.g. Village: 'Deon', Tehsil: 'Bathinda', District: 'Bathinda' or ज़िला: 'मण्डी', तहसील: 'बल्ह', मोहाल: 'अणु'). NEVER leave them null.\n"
-        "- Ownership Details: Extract fractional shares (e.g. '1/18 share, Left equal share 17/18 share') into 'ownership_details.shares'.\n\n"
-        "Return the extracted data as a valid JSON object matching the schema."
+        "Extract structured land record data from this document image into the JSON schema based SOLELY on the visible text in THIS image:\n"
+        "1. Landowner Details: Extract ONLY the legal owner name(s) from Column 4 ('Name of the owner and detail' / 'नाम मालिक व एहवाल'). Never extract cultivator/tenant names from Column 5 ('Name & Detail of the Person who cultivates' / 'नाम काश्तकार').\n"
+        "2. Khata / Khewat Number: Extract the owner account number strictly from Column 1 ('Khewat / Khevat No.').\n"
+        "3. Khatauni Number: Extract all cultivator holding numbers strictly from Column 2 ('Khatauni / Khautani No.'), comma-separated.\n"
+        "4. Khasra Numbers: Extract all plot/survey numbers from Column 7 ('Khasra No.'), comma-separated.\n"
+        "5. Plot Area: Extract area measurement(s) from Column 8 ('Area / रकबा'). If multiple sub-plot areas are listed, separate them with commas. Strip any crop or soil words like 'irrigated', 'unirrigated', etc. Set the measurement unit as specified on the document (e.g. 'Kanal-Marla', 'Bigha-Biswa', 'Acre', etc.).\n"
+        "6. Location: Extract Village, Tehsil, and District from the document header text.\n"
+        "7. Ownership Details: Extract fractional shares if written in the owner column into 'ownership_details.share'.\n\n"
+        "Return strictly valid JSON matching the schema with data from this document only. Do not hallucinate or use values from other records."
     )
 
     # In-context few-shot learning from past human corrections (Section 9)

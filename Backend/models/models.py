@@ -59,6 +59,7 @@ class ExtractedRecord(Base):
     survey_number = Column(String, nullable=True)
     khasra_number = Column(String, nullable=True)
     khata_number = Column(String, nullable=True)
+    khatauni_number = Column(String, nullable=True)
     plot_area = Column(JSON, nullable=True)
     village = Column(String, nullable=True)
     tehsil = Column(String, nullable=True)

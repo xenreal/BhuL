@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 from pydantic import BaseModel, Field
 
 
@@ -15,7 +15,7 @@ class LandownerDetails(BaseModel):
 
 class PlotArea(BaseModel):
     value: Union[float, str] = Field(
-        description="Numeric value or formatted area string (e.g. '14-10' or '00-08-09'). If missing, set to 'N/A'"
+        description="Comma-separated list of distinct sub-plot areas (e.g. '5-13, 2-0, 2-0, 12-7'). Do NOT sum into a single total. Strip all words like 'irrigated'. If missing, set to 'N/A'"
     )
     unit: str = Field(
         description="Specific measurement unit (e.g. 'Kanal-Marla' or 'बीघा.बि.बि.' or 'Acre'). NEVER include options or parentheses"
@@ -42,11 +42,11 @@ class FieldConfidences(BaseModel):
     survey_number: float = Field(default=0.9, description="Confidence score for survey_number (0.0 to 1.0)")
     khasra_number: float = Field(default=0.9, description="Confidence score for khasra_number (0.0 to 1.0)")
     khata_number: float = Field(default=0.9, description="Confidence score for khata_number (0.0 to 1.0)")
+    khatauni_number: float = Field(default=0.9, description="Confidence score for khatauni_number (0.0 to 1.0)")
     plot_area: float = Field(default=0.9, description="Confidence score for plot_area (0.0 to 1.0)")
     village: float = Field(default=0.9, description="Confidence score for village (0.0 to 1.0)")
     tehsil: float = Field(default=0.9, description="Confidence score for tehsil (0.0 to 1.0)")
     district: float = Field(default=0.9, description="Confidence score for district (0.0 to 1.0)")
-    land_classification: float = Field(default=0.9, description="Confidence score for land_classification (0.0 to 1.0)")
     ownership_details: float = Field(default=0.9, description="Confidence score for ownership_details (0.0 to 1.0)")
 
 
@@ -55,7 +55,10 @@ class ExtractedRecordSchema(BaseModel):
         description="Details of the landowner"
     )
     khata_number: str = Field(
-        description="Owner account number from Khewat / Khatauni (e.g. '1/1' or '15'). If missing, set to 'N/A'"
+        description="Owner account number strictly from Column 1 ('Khevat No.' / 'Khewat No.' / 'खेवट नं', e.g. '4' or '1/1'). Do NOT read from Khautani."
+    )
+    khatauni_number: str = Field(
+        description="All cultivator holding account numbers strictly from Column 2 ('Khautani No.' / 'खतौनी नं', e.g. '7, 8, 10, 13'). Extract all numbers listed down Column 2, comma-separated. If missing, set to 'N/A'"
     )
     khasra_number: str = Field(
         description="All Khasra plot numbers listed in the table, comma-separated (e.g. '247// 1, 2, 9/1, 10/1' or '274, 276, 544'). If missing, set to 'N/A'"
@@ -76,10 +79,6 @@ class ExtractedRecordSchema(BaseModel):
     plot_area: PlotArea = Field(
         description="Plot area size and unit"
     )
-    land_classification: Optional[str] = Field(
-        default=None,
-        description="Classification of the land, e.g. agricultural, irrigated, unirrigated, residential"
-    )
     ownership_details: Optional[OwnershipDetails] = Field(
         default=None,
         description="Ownership type and share details if available"
@@ -87,5 +86,12 @@ class ExtractedRecordSchema(BaseModel):
     field_confidences: Optional[FieldConfidences] = Field(
         default_factory=FieldConfidences,
         description="Confidence scores between 0.0 and 1.0 for each extracted field"
+    )
+
+
+class CommitRequest(BaseModel):
+    corrections: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Human verification corrections: e.g. {'landowner_details.name': 'मोहोर सिंह'}"
     )
 

@@ -45,6 +45,8 @@ def init_db():
         if "extracted_records" in inspector.get_table_names():
             columns_er = [c["name"] for c in inspector.get_columns("extracted_records")]
             with engine.begin() as conn:
+                if "khatauni_number" not in columns_er:
+                    conn.execute(text("ALTER TABLE extracted_records ADD COLUMN khatauni_number VARCHAR"))
                 if "overall_confidence" not in columns_er:
                     conn.execute(text("ALTER TABLE extracted_records ADD COLUMN overall_confidence FLOAT DEFAULT 0.9"))
                 if "land_classification" not in columns_er:
@@ -58,5 +60,50 @@ def init_db():
                 # Clean up legacy confidence values stored on 1-10 or 1-100 scales
                 conn.execute(text("UPDATE extracted_records SET overall_confidence = overall_confidence / 10.0 WHERE overall_confidence > 1.0 AND overall_confidence <= 10.0"))
                 conn.execute(text("UPDATE extracted_records SET overall_confidence = overall_confidence / 100.0 WHERE overall_confidence > 10.0"))
+        if "correction_examples" in inspector.get_table_names():
+            columns_ce = [c["name"] for c in inspector.get_columns("correction_examples")]
+            with engine.begin() as conn:
+                if "region" not in columns_ce:
+                    conn.execute(text("ALTER TABLE correction_examples ADD COLUMN region VARCHAR DEFAULT 'north_central'"))
+                if "ocr_snippet" not in columns_ce:
+                    conn.execute(text("ALTER TABLE correction_examples ADD COLUMN ocr_snippet TEXT DEFAULT ''"))
+    except Exception:
+        pass
+
+    # Seed demo few-shot correction examples (Section 9 of Spec)
+    try:
+        import uuid
+        from models import CorrectionExample
+        with SessionLocal() as db:
+            if db.query(CorrectionExample).count() <= 1:
+                db.query(CorrectionExample).delete()
+                seed_examples = [
+                    CorrectionExample(
+                        id=uuid.uuid4(),
+                        region="north_central",
+                        field_name="landowner_details.name",
+                        ocr_snippet="नाम मालिक व एहवाल",
+                        wrong_value="मनोहर सिंह नम्बरदार पुत्र निवासी महाल बलेरन माल",
+                        corrected_value="लीला प्रकाश, माधविन्द्र, कृष्ण चन्द",
+                    ),
+                    CorrectionExample(
+                        id=uuid.uuid4(),
+                        region="north_central",
+                        field_name="plot_area.unit",
+                        ocr_snippet="रकबा / 5-8 irrigated",
+                        wrong_value="irrigated",
+                        corrected_value="Kanal-Marla",
+                    ),
+                    CorrectionExample(
+                        id=uuid.uuid4(),
+                        region="north_central",
+                        field_name="landowner_details.address",
+                        ocr_snippet="स्थानिय वासी",
+                        wrong_value="None",
+                        corrected_value="स्थानिय वासी",
+                    ),
+                ]
+                db.add_all(seed_examples)
+                db.commit()
     except Exception:
         pass

@@ -259,6 +259,50 @@ def check_duplicate_parcel(db: Session, doc_id: str, extracted_data: Dict[str, A
     }
 
 
+def check_multi_parcel_holding(extracted_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Rule 5: Detects if the document contains multiple sub-plot areas with multiple khasra numbers.
+    Flags for Patwari review when multi-parcel / multi-holding land records are processed.
+    """
+    plot_area = extracted_data.get("plot_area") or {}
+    area_val = str(plot_area.get("value") or "")
+    khasra_val = str(extracted_data.get("khasra_number") or "")
+
+    # Detect multiple sub-plots (e.g. comma-separated pairs like 5-13, 2-0, 2-0, 12-7)
+    area_matches = re.findall(r"\b\d+\s*-\s*\d+(?:\s*-\s*\d+)?\b", area_val)
+    has_multiple_areas = len(area_matches) > 1 or "," in area_val
+
+    # Detect multiple khasras (e.g. comma-separated or multiple numbers)
+    khasra_clean = re.sub(r"\b(item\s*\d+|total|khasra)\b", "", khasra_val, flags=re.IGNORECASE)
+    khasra_parts = [p.strip() for p in re.split(r"[,;\n]+", khasra_clean) if p.strip()]
+    has_multiple_khasras = len(khasra_parts) > 1 or len(re.findall(r"\b\d+(?:/\d+)*\b", khasra_val)) > 1
+
+    if has_multiple_areas and has_multiple_khasras:
+        return {
+            "rule_name": "multi_parcel_holding",
+            "passed": False,
+            "detail": "Multiple sub-plot areas with multiple khasra numbers detected.",
+        }
+    elif has_multiple_areas:
+        return {
+            "rule_name": "multi_parcel_holding",
+            "passed": False,
+            "detail": "Multiple sub-plot areas detected.",
+        }
+    elif has_multiple_khasras:
+        return {
+            "rule_name": "multi_parcel_holding",
+            "passed": False,
+            "detail": "Multiple Khasra numbers detected.",
+        }
+    else:
+        return {
+            "rule_name": "multi_parcel_holding",
+            "passed": True,
+            "detail": "Single parcel holding recorded.",
+        }
+
+
 def run_all_validations(
     db: Session, doc_id: str, extracted_data: Dict[str, Any]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str, float]:
@@ -275,6 +319,7 @@ def run_all_validations(
         check_area_aggregation(extracted_data),
         check_fractional_shares(extracted_data),
         check_duplicate_parcel(db, doc_id, extracted_data),
+        check_multi_parcel_holding(extracted_data),
     ]
 
     confs = extracted_data.get("field_confidences") or {}
@@ -295,18 +340,59 @@ def run_all_validations(
     scores = [normalize_score(v) for v in confs.values() if isinstance(v, (int, float))]
     overall_confidence = round(sum(scores) / len(scores), 2) if scores else 0.88
 
+    def calibrate_field_confidence(field_name: str, value: Any, raw_score: float) -> float:
+        """
+        Calibrates raw VLM confidence to realistic revenue document standards.
+        Prevents open-source VLMs from reporting falsely inflated 0.95+ scores on
+        handwritten, faded, or multi-party cadastral text.
+        """
+        if is_blank_or_na(value):
+            return 0.0
+
+        score = normalize_score(raw_score)
+
+        if field_name == "landowner_details.name":
+            str_val = str(value).strip() if value else ""
+            # Landowner names on revenue sheets are frequently cursive/complex
+            if score >= 0.78:
+                score = 0.68
+            if "," in str_val or len(str_val) > 20:
+                score = min(score, 0.65)
+            if "नम्बरदार" in str_val or any(ch.isdigit() for ch in str_val):
+                score = min(score, 0.52)
+            if re.search(r"\b(cultivate|cultivator|काश्तकार|मुजारिया)\b", str_val, re.IGNORECASE):
+                score = min(score, 0.45)
+
+        elif field_name == "plot_area":
+            if isinstance(value, dict):
+                val_str = str(value.get("value", ""))
+                if not val_str or val_str.lower() in ("null", "none", "n/a"):
+                    return 0.0
+            if score >= 0.85:
+                score = 0.76
+
+        elif field_name in ("khasra_number", "khata_number", "khatauni_number"):
+            if score >= 0.90:
+                score = 0.82
+
+        elif field_name in ("village", "tehsil", "district"):
+            if score >= 0.92:
+                score = 0.86
+
+        return round(score, 2)
+
     owner_details = extracted_data.get("landowner_details") or {}
     owner_name = owner_details.get("name") if isinstance(owner_details, dict) else None
 
     raw_fields = [
-        ("landowner_details.name", owner_name, normalize_score(confs.get("landowner_details", 0.9))),
-        ("khasra_number", extracted_data.get("khasra_number"), normalize_score(confs.get("khasra_number", 0.9))),
-        ("khata_number", extracted_data.get("khata_number"), normalize_score(confs.get("khata_number", 0.9))),
-        ("plot_area", extracted_data.get("plot_area"), normalize_score(confs.get("plot_area", 0.9))),
-        ("village", extracted_data.get("village"), normalize_score(confs.get("village", 0.9))),
-        ("tehsil", extracted_data.get("tehsil"), normalize_score(confs.get("tehsil", 0.9))),
-        ("district", extracted_data.get("district"), normalize_score(confs.get("district", 0.9))),
-        ("land_classification", extracted_data.get("land_classification"), normalize_score(confs.get("land_classification", 0.9))),
+        ("landowner_details.name", owner_name, calibrate_field_confidence("landowner_details.name", owner_name, confs.get("landowner_details", 0.68))),
+        ("khata_number", extracted_data.get("khata_number"), calibrate_field_confidence("khata_number", extracted_data.get("khata_number"), confs.get("khata_number", 0.80))),
+        ("khatauni_number", extracted_data.get("khatauni_number"), calibrate_field_confidence("khatauni_number", extracted_data.get("khatauni_number"), confs.get("khatauni_number", 0.80))),
+        ("khasra_number", extracted_data.get("khasra_number"), calibrate_field_confidence("khasra_number", extracted_data.get("khasra_number"), confs.get("khasra_number", 0.82))),
+        ("plot_area", extracted_data.get("plot_area"), calibrate_field_confidence("plot_area", extracted_data.get("plot_area"), confs.get("plot_area", 0.76))),
+        ("village", extracted_data.get("village"), calibrate_field_confidence("village", extracted_data.get("village"), confs.get("village", 0.86))),
+        ("tehsil", extracted_data.get("tehsil"), calibrate_field_confidence("tehsil", extracted_data.get("tehsil"), confs.get("tehsil", 0.87))),
+        ("district", extracted_data.get("district"), calibrate_field_confidence("district", extracted_data.get("district"), confs.get("district", 0.88))),
     ]
 
     ui_fields = []

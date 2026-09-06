@@ -55,7 +55,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex flex-col">
               <div className="flex items-center gap-2">
                 <span className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight text-[#9b673c] font-serif">
-                  BhuLekh
+                  Bhu-Lekh
                 </span>
                 <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-amber-900/60 bg-amber-100/50 px-2 py-0.5 rounded-full border border-amber-200/40">
                   भूलेख Portal

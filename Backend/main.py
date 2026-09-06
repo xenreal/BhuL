@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="BhuLekh Land Record Digitization API",
+    title="Bhu-Lekh Land Record Digitization API",
     description="Extracts structured data from Indian land records using local Qwen 2.5 VL via Ollama",
     lifespan=lifespan,
 )

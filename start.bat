@@ -1,30 +1,45 @@
 @echo off
-title BhuLekh Prototype Launcher
+title Bhu-Lekh Prototype Launcher
 echo ========================================================
-echo        BhuLekh - Land Record Digitization Engine        
+echo        Bhu-Lekh - Land Record Digitization Engine        
 echo ========================================================
 echo.
 
 set ROOT_DIR=%~dp0
 
-echo [1/3] Starting Backend Server (FastAPI on Port 8000)...
-start "BhuLekh Backend (FastAPI)" cmd /k "cd /d "%ROOT_DIR%Backend" && "%ROOT_DIR%Backend\myenv\Scripts\python.exe" -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
+echo [1/4] Checking Ollama AI Service...
+netstat -ano | findstr 11434 >nul
+if not errorlevel 1 (
+    echo       [OK] Ollama is already running on port 11434.
+) else (
+    echo       [..] Ollama not detected. Starting Ollama in the background...
+    if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" (
+        start "Ollama AI Server" "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" serve
+    ) else (
+        start "Ollama AI Server" ollama serve
+    )
+    ping 127.0.0.1 -n 4 >nul
+)
 
-echo [2/3] Starting Frontend Server (Vite React on Port 5173)...
-start "BhuLekh Frontend (Vite)" cmd /k "cd /d "%ROOT_DIR%Frontend\bhulekh-frontend" && npm run dev"
+echo [2/4] Starting Backend Server (FastAPI on Port 8000)...
+start "Bhu-Lekh Backend (FastAPI)" cmd /k "cd /d "%ROOT_DIR%Backend" && "%ROOT_DIR%Backend\myenv\Scripts\python.exe" -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload"
 
-echo [3/3] Opening BhuLekh Portal in your browser...
-timeout /t 3 /nobreak >nul
+echo [3/4] Starting Frontend Server (Vite React on Port 5173)...
+start "Bhu-Lekh Frontend (Vite)" cmd /k "cd /d "%ROOT_DIR%Frontend\bhulekh-frontend" && npm run dev"
+
+echo [4/4] Opening Bhu-Lekh Portal in your browser...
+ping 127.0.0.1 -n 4 >nul
 start http://localhost:5173
 
 echo.
 echo ========================================================
-echo Both servers are running!
-echo   - Backend API: http://127.0.0.1:8000
-echo   - Frontend UI: http://localhost:5173
+echo All Bhu-Lekh services are running!
+echo   - Ollama AI Server : http://127.0.0.1:11434
+echo   - Backend API      : http://127.0.0.1:8000
+echo   - Frontend UI      : http://localhost:5173
 echo.
-echo Leave the two open terminal windows running.
-echo To stop everything, simply close those two command windows.
+echo Leave the open terminal windows running.
+echo To stop everything, simply close those command windows.
 echo ========================================================
 pause
 

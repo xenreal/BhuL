@@ -55,10 +55,10 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex flex-col">
               <div className="flex items-center gap-2">
                 <span className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight text-[#9b673c] font-serif">
-                  Bhu-Lekh
+                  Bhu Khata
                 </span>
                 <span className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-amber-900/60 bg-amber-100/50 px-2 py-0.5 rounded-full border border-amber-200/40">
-                  भूलेख Portal
+                  भू-खाता Portal
                 </span>
               </div>
               <span className="text-[11px] sm:text-xs text-slate-500 font-medium hidden lg:block">

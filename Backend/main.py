@@ -1,3 +1,4 @@
+import logging
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -5,6 +6,7 @@ from pathlib import Path
 
 from typing import Optional
 
+import pymupdf
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import String, or_
 from sqlalchemy.orm import Session
@@ -19,11 +21,15 @@ from models import (
     Document,
     DocumentStatusEnum,
     ExtractedRecord,
+    GeminiUsage,
     RegionEnum,
     ValidationResult,
 )
+from rate_limiter import GeminiRateLimitError, GeminiOverloadError, get_gemini_usage
 from schemas.schemas import CommitRequest
 from validation_engine import run_all_validations
+
+logger = logging.getLogger("bhulekh.main")
 
 # Ensure upload directory exists
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploaded_images"
@@ -38,7 +44,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Bhu-Lekh Land Record Digitization API",
+    title="Bhu Khata Land Record Digitization API",
     description="Extracts structured data from Indian land records using local Qwen 2.5 VL via Ollama",
     lifespan=lifespan,
 )
@@ -79,12 +85,12 @@ async def upload_document(
     the document metadata and extracted records into SQLite, and returns
     the extracted JSON.
     """
-    # 1. Validate file extension (JPG, PNG, WEBP)
+    # 1. Validate file extension (JPG, PNG, WEBP, PDF)
     file_ext = (Path(file.filename).suffix if file.filename else ".jpg").lower()
-    if file_ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+    if file_ext not in [".jpg", ".jpeg", ".png", ".webp", ".pdf"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file format '{file_ext}'. Please upload an image scan in JPG, PNG, or WEBP format."
+            detail=f"Unsupported file format '{file_ext}'. Please upload an image or PDF scan (.jpg, .jpeg, .png, .webp, .pdf)."
         )
 
     unique_filename = f"{uuid.uuid4()}{file_ext}"
@@ -99,33 +105,86 @@ async def upload_document(
             detail=f"Failed to save document to disk: {str(exc)}",
         )
 
-    # 2. Validate region enum
+    # 2. If PDF, render the first page to a high-res PNG
+    if file_ext == ".pdf":
+        try:
+            pdf_doc = pymupdf.open(file_path)
+            if len(pdf_doc) == 0:
+                raise ValueError("The uploaded PDF contains no pages.")
+            page = pdf_doc[0]
+            # Render page at 200 DPI for crisp OCR extraction
+            pix = page.get_pixmap(dpi=200)
+            rendered_image_filename = f"{Path(unique_filename).stem}.png"
+            rendered_image_path = UPLOAD_DIR / rendered_image_filename
+            pix.save(rendered_image_path)
+            pdf_doc.close()
+            processing_image_path = rendered_image_path
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Failed to render PDF document into an image: {str(exc)}",
+            )
+    else:
+        processing_image_path = file_path
+
+    # 3. Validate region enum
     try:
         region_enum = RegionEnum(region.lower())
     except ValueError:
         region_enum = RegionEnum.north_central
 
-    # 3. Create Document DB entry
+    # 4. Create Document DB entry (points to rendered PNG)
     doc = Document(
         id=uuid.uuid4(),
         filename=file.filename or unique_filename,
         region=region_enum,
         status=DocumentStatusEnum.processing,
-        image_path=str(file_path),
+        image_path=str(processing_image_path),
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    # 4. Call Ollama Qwen 2.5 VL extraction with in-context few-shot learning
+    # 5. Extract document data (routed dynamically via AI_PROVIDER in .env)
     try:
-        extracted_data = extract_document_data(str(file_path), region=doc.region.value)
+        extracted_data = extract_document_data(str(processing_image_path), region=doc.region.value)
+    except GeminiRateLimitError:
+        doc.status = DocumentStatusEnum.failed
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Daily demo limit reached, please try again tomorrow",
+        )
+    except GeminiOverloadError:
+        doc.status = DocumentStatusEnum.failed
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The AI service is currently experiencing high demand — please try again in a moment.",
+        )
     except Exception as exc:
+        err_msg = str(exc)
+        if "Daily demo limit reached" in err_msg:
+            doc.status = DocumentStatusEnum.failed
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Daily demo limit reached, please try again tomorrow",
+            )
+        if "experiencing high demand" in err_msg:
+            doc.status = DocumentStatusEnum.failed
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The AI service is currently experiencing high demand — please try again in a moment.",
+            )
+        # Log full detailed exception server-side; NEVER leak internal details or stack traces to public callers
+        logger.error(f"[Main Upload] Extraction failed unexpectedly for doc {doc.id}: {exc}", exc_info=True)
         doc.status = DocumentStatusEnum.flagged
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Document extraction failed: {str(exc)}",
+            detail="An unexpected error occurred while processing this document.",
         )
 
     # 5. Run Validation Rules Engine (Section 7 & 8 of Spec)
@@ -177,6 +236,7 @@ async def upload_document(
         "fields": ui_fields,
         "validation_flags": rule_results,
         "extracted_data": extracted_data,
+        "image_url": f"/uploaded_images/{Path(processing_image_path).name}",
     }
 
 
@@ -222,6 +282,15 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         "failed_count": failed_count,
         "avg_confidence": avg_conf,
     }
+
+
+@app.get("/stats/gemini-usage")
+def get_gemini_usage_endpoint():
+    """
+    Returns today's Gemini call count (resets daily at midnight) and computed monthly total.
+    """
+    return get_gemini_usage()
+
 
 
 @app.patch("/documents/{document_id}/commit")

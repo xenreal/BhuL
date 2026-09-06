@@ -58,10 +58,10 @@ class ExtractedRecordSchema(BaseModel):
         description="Owner account number strictly from Column 1 ('Khevat No.' / 'Khewat No.' / 'खेवट नं'). Do NOT read from Khatauni column."
     )
     khatauni_number: str = Field(
-        description="All cultivator holding account numbers strictly from Column 2 ('Khautani No.' / 'Khatauni No.' / 'खतौनी नं'). Extract all numbers listed in Column 2, comma-separated. If missing, set to 'N/A'"
+        description="All cultivator holding account numbers listed vertically down Column 2 ('Khautani No.' / 'Khatauni No.' / 'खतौनी नं') across every row in the table, separated by commas (e.g. '7, 8, 10, 13'). Scan all rows in Column 2 from top to bottom — do not stop after the first row. If missing, set to 'N/A'"
     )
     khasra_number: str = Field(
-        description="All Khasra / Survey plot numbers listed in the table, comma-separated. If missing, set to 'N/A'"
+        description="All Khasra / Survey plot numbers listed in the table across all rows, comma-separated (e.g. '64// 9/3/2/1, 10/2, 10/3, 19/2, 11, 21, 12/1, 20'). Include the full plot numbers, not just the rectangle prefix. If missing, set to 'N/A'"
     )
     survey_number: Optional[str] = Field(
         default=None,

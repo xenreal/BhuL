@@ -8,6 +8,7 @@ from sqlalchemy import (
     Enum as SQLEnum,
     Float,
     ForeignKey,
+    Integer,
     JSON,
     String,
     Text,
@@ -112,4 +113,14 @@ class CorrectionExample(Base):
     wrong_value = Column(Text, nullable=False)
     corrected_value = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class GeminiUsage(Base):
+    __tablename__ = "gemini_usage"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String, unique=True, index=True, nullable=False)   # "YYYY-MM-DD"
+    month = Column(String, index=True, nullable=False)               # "YYYY-MM", derived from date, used for querying
+    daily_count = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

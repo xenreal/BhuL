@@ -3,6 +3,7 @@ from models.models import (
     Document,
     DocumentStatusEnum,
     ExtractedRecord,
+    GeminiUsage,
     RegionEnum,
     ValidationResult,
     VerificationTask,
@@ -16,4 +17,5 @@ __all__ = [
     "ValidationResult",
     "VerificationTask",
     "CorrectionExample",
+    "GeminiUsage",
 ]

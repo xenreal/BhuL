@@ -1,5 +1,5 @@
 /**
- * BhuLekh API Client Layer
+ * Bhu Khata API Client Layer
  * Connects the React frontend to the FastAPI backend (http://127.0.0.1:8000).
  */
 
@@ -26,6 +26,7 @@ export interface UploadResponse {
   fields: DocumentField[]
   validation_flags: ValidationFlag[]
   extracted_data: Record<string, any>
+  image_url?: string | null
 }
 
 export interface DashboardStats {

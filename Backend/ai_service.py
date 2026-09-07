@@ -349,11 +349,12 @@ def extract_with_gemini(image_path: str, region: str = "north_central") -> dict:
     except APIError as api_err:
         err_code = getattr(api_err, "code", None)
         err_str = str(api_err)
-        if err_code in (429, 503) or "429" in err_str or "503" in err_str:
-            logger.warning(f"[AI Service] Gemini overload/rate-limit hit ({err_code}): {err_str}")
-            raise GeminiOverloadError(
-                "The AI service is currently experiencing high demand — please try again in a moment."
-            ) from api_err
+        if err_code in (429, 503) or "429" in err_str or "503" in err_str or "quota" in err_str.lower() or "resource" in err_str.lower():
+            logger.warning(f"[AI Service] Gemini overload/quota hit ({err_code}): {err_str}")
+            return {
+                "success": False,
+                "message": "The AI is currently facing high demand. Please try again in a few moments."
+            }
         # Log real raw error server-side for debugging
         logger.error(f"[AI Service] Gemini APIError ({err_code}): {err_str}", exc_info=True)
         raise RuntimeError("An unexpected error occurred while processing this document.") from api_err
@@ -361,21 +362,32 @@ def extract_with_gemini(image_path: str, region: str = "north_central") -> dict:
         status_code = http_err.response.status_code
         if status_code in (429, 503):
             logger.warning(f"[AI Service] Gemini HTTP overload status ({status_code})")
-            raise GeminiOverloadError(
-                "The AI service is currently experiencing high demand — please try again in a moment."
-            ) from http_err
+            return {
+                "success": False,
+                "message": "The AI is currently facing high demand. Please try again in a few moments."
+            }
         logger.error(f"[AI Service] Gemini HTTPStatusError ({status_code}): {http_err.response.text}", exc_info=True)
         raise RuntimeError("An unexpected error occurred while processing this document.") from http_err
-    except (GeminiRateLimitError, GeminiOverloadError):
-        raise
+    except (httpx.TimeoutException, TimeoutError):
+        logger.warning("[AI Service] Gemini request timed out.")
+        return {
+            "success": False,
+            "message": "The AI is currently facing high demand. Please try again in a few moments."
+        }
+    except (GeminiRateLimitError, GeminiOverloadError) as rate_err:
+        logger.warning(f"[AI Service] Gemini rate/overload condition: {rate_err}")
+        return {
+            "success": False,
+            "message": "The AI is currently facing high demand. Please try again in a few moments."
+        }
     except Exception as exc:
-        err_str = str(exc)
-        if ("429" in err_str and ("resource" in err_str.lower() or "quota" in err_str.lower() or "rate" in err_str.lower())) or \
-           ("503" in err_str and ("unavailable" in err_str.lower() or "overload" in err_str.lower() or "demand" in err_str.lower())):
-            logger.warning(f"[AI Service] Gemini high-demand error matched: {err_str}")
-            raise GeminiOverloadError(
-                "The AI service is currently experiencing high demand — please try again in a moment."
-            ) from exc
+        err_str = str(exc).lower()
+        if ("429" in err_str or "503" in err_str or "quota" in err_str or "rate" in err_str or "timeout" in err_str or "demand" in err_str or "unavailable" in err_str):
+            logger.warning(f"[AI Service] Gemini high-demand/timeout error matched: {exc}")
+            return {
+                "success": False,
+                "message": "The AI is currently facing high demand. Please try again in a few moments."
+            }
         logger.error(f"[AI Service] Gemini call failed unexpectedly: {exc}", exc_info=True)
         raise RuntimeError("An unexpected error occurred while processing this document.") from exc
 

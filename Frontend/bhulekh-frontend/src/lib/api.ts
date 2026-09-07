@@ -61,7 +61,7 @@ export interface CommitResponse {
 export async function uploadDocument(
   file: File,
   region: string = "north_central"
-): Promise<UploadResponse> {
+): Promise<any> {
   const formData = new FormData()
   formData.append("file", file)
   formData.append("region", region)
@@ -71,12 +71,19 @@ export async function uploadDocument(
     body: formData,
   })
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}))
-    throw new Error(err.detail || `Upload failed with status ${response.status}`)
+  // Parse JSON response safely
+  const data = await response.json().catch(() => ({}))
+
+  // If backend returned { success: false, message: ... } payload, return it directly
+  if (data && data.success === false) {
+    return data
   }
 
-  return response.json()
+  if (!response.ok) {
+    throw new Error(data.detail || data.message || `Upload failed with status ${response.status}`)
+  }
+
+  return data
 }
 
 /**

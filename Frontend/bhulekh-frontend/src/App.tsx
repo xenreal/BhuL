@@ -124,12 +124,22 @@ export function App() {
 
     try {
       const response = await uploadDocument(file, region)
+
+      // Task 2: If data.success === false, intercept flow, stop loading, trigger custom UI message
+      if (response && response.success === false) {
+        setIsProcessing(false)
+        setUploadError(
+          response.message || "The AI is currently facing high demand. Please try again in a few moments."
+        )
+        return
+      }
+
       setExtractedDoc(response)
       // Auto-refresh the dashboard counts
       setStatsTrigger((prev) => prev + 1)
     } catch (err: any) {
       setUploadError(
-        err.message || "Failed to process document. Please ensure the backend server is running on port 8000."
+        err.message || "Failed to process document. Please ensure the backend server is running."
       )
     } finally {
       setIsProcessing(false)

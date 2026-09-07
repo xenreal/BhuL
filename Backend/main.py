@@ -8,6 +8,7 @@ from typing import Optional
 
 import pymupdf
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import String, or_
 from sqlalchemy.orm import Session
 
@@ -148,35 +149,35 @@ async def upload_document(
     # 5. Extract document data (routed dynamically via AI_PROVIDER in .env)
     try:
         extracted_data = extract_document_data(str(processing_image_path), region=doc.region.value)
-    except GeminiRateLimitError:
+    except (GeminiRateLimitError, GeminiOverloadError):
         doc.status = DocumentStatusEnum.failed
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Daily demo limit reached, please try again tomorrow",
-        )
-    except GeminiOverloadError:
-        doc.status = DocumentStatusEnum.failed
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The AI service is currently experiencing high demand — please try again in a moment.",
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": False,
+                "message": "The AI is currently facing high demand. Please try again in a few moments.",
+            },
         )
     except Exception as exc:
-        err_msg = str(exc)
-        if "Daily demo limit reached" in err_msg:
+        err_msg = str(exc).lower()
+        if (
+            "facing high demand" in err_msg
+            or "experiencing high demand" in err_msg
+            or "daily demo limit reached" in err_msg
+            or "quota" in err_msg
+            or "timeout" in err_msg
+            or "503" in err_msg
+            or "429" in err_msg
+        ):
             doc.status = DocumentStatusEnum.failed
             db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Daily demo limit reached, please try again tomorrow",
-            )
-        if "experiencing high demand" in err_msg:
-            doc.status = DocumentStatusEnum.failed
-            db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="The AI service is currently experiencing high demand — please try again in a moment.",
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "success": False,
+                    "message": "The AI is currently facing high demand. Please try again in a few moments.",
+                },
             )
         # Log full detailed exception server-side; NEVER leak internal details or stack traces to public callers
         logger.error(f"[Main Upload] Extraction failed unexpectedly for doc {doc.id}: {exc}", exc_info=True)
@@ -185,6 +186,21 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="An unexpected error occurred while processing this document.",
+        )
+
+    # If extraction returned a failure payload (e.g. { "success": False, "message": "..." }):
+    if isinstance(extracted_data, dict) and extracted_data.get("success") is False:
+        doc.status = DocumentStatusEnum.failed
+        db.commit()
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": False,
+                "message": extracted_data.get(
+                    "message",
+                    "The AI is currently facing high demand. Please try again in a few moments.",
+                ),
+            },
         )
 
     # 5. Run Validation Rules Engine (Section 7 & 8 of Spec)

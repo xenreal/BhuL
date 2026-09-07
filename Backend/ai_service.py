@@ -399,7 +399,7 @@ def extract_with_gemini(image_path: str, region: str = "north_central") -> dict:
         return _parse_and_sanitize(raw_content)
     except Exception as exc:
         logger.error(f"[AI Service] Failed to parse Gemini response: {exc}. Raw content: {raw_content}", exc_info=True)
-        raise RuntimeError("An unexpected error occurred while processing this document.") from exc
+        return {"success": False, "message": "The AI is currently facing high demand. Please try again in a few moments."}
 
 
 def extract_document_data(image_path: str, region: str = "north_central") -> dict:

@@ -13,7 +13,7 @@ Bhu Khata reads a scanned land record (image or PDF) and automatically extracts 
 Every human correction is remembered and used to improve future extractions on similar documents — the system gets more accurate the more it's used, without retraining.
 
 Key Capabilities: 
--> Multilingual document recognition (Hindi, Tamil, English, and more)
+-> Multilingual document recognition (Hindi, English,and more)
 -> Structured extraction from scanned images and PDFs
 -> Automated validation: area aggregation, ownership share checks, duplicate parcel detection, multi-parcel holding flags
 -> Confidence scoring with automatic flagging of uncertain fields

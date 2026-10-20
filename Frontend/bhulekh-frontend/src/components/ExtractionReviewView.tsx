@@ -13,12 +13,16 @@ import {
   FileCheck2,
   Loader2,
   Flag,
+  MapPin,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
 import { commitDocument } from "@/lib/api"
+import { RecordMap } from "@/components/RecordMap"
 import type { UploadResponse } from "@/lib/api"
 import { transliterateSentence } from "@/lib/hindiTransliterator"
 
@@ -97,6 +101,8 @@ export const ExtractionReviewView: React.FC<ExtractionReviewViewProps> = ({
 
   // Mobile/Tablet responsive view mode: 'both' | 'scan' | 'fields'
   const [mobileTab, setMobileTab] = useState<"both" | "scan" | "fields">("both")
+  // Map view card starts closed by default; opens upon user click
+  const [isMapOpen, setIsMapOpen] = useState(false)
 
   const handleFieldChange = (fieldName: string, newVal: string) => {
     setFieldValues((prev) => ({
@@ -593,6 +599,68 @@ export const ExtractionReviewView: React.FC<ExtractionReviewViewProps> = ({
 
         </div>
 
+      </div>
+
+      {/* Full-width Map View Card - Positioned Below Dual-Plane Workflow */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden transition-all duration-200">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setIsMapOpen((prev) => !prev)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              setIsMapOpen((prev) => !prev)
+            }
+          }}
+          className="flex items-center justify-between px-5 py-4 bg-slate-50/75 border-b border-slate-200 cursor-pointer select-none hover:bg-slate-100/80 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-amber-50 border border-amber-200/80 flex items-center justify-center shrink-0">
+              <MapPin className="h-4 w-4 text-[#9b673c]" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-bold text-slate-900">
+                  Map view
+                </h4>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-200/70 text-slate-700">
+                  {isMapOpen ? "Expanded" : "Click to view location"}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Geographic location of the extracted land record parcel
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <span className="text-xs font-medium text-slate-500 hidden sm:inline">
+              {isMapOpen ? "Collapse Map" : "Open Map"}
+            </span>
+            <div className="p-1 rounded-md text-slate-500 bg-white border border-slate-200 shadow-2xs">
+              {isMapOpen ? (
+                <ChevronUp className="h-4 w-4 text-slate-700" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-slate-700" />
+              )}
+            </div>
+          </div>
+        </div>
+
+        {isMapOpen && (
+          <div className="p-4 sm:p-6 bg-white animate-in fade-in duration-200">
+            <RecordMap
+              village={fieldValues["village"] || ""}
+              tehsil={fieldValues["tehsil"] || ""}
+              district={fieldValues["district"] || ""}
+              ownerName={fieldValues["landowner_details.name"] || fieldValues["landowner_details"] || ""}
+              khasraNumber={fieldValues["khasra_number"] || ""}
+              plotArea={fieldValues["plot_area"] || ""}
+              hasIssues={documentData.validation_flags.some((v) => !v.passed)}
+            />
+          </div>
+        )}
       </div>
 
     </div>
